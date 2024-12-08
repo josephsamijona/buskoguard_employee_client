@@ -14,13 +14,13 @@ class QRScreen extends StatefulWidget {
 class _QRScreenState extends State<QRScreen> with SingleTickerProviderStateMixin {
   final ApiService _apiService = ApiService();
   late AnimationController _animationController;
-  late Animation<double> _fadeAnimation;
   Timer? _qrTimer;
   Timer? _progressTimer;
   String? _currentQRCode;
   Map<String, dynamic>? _currentQRData;
   double _progress = 1.0;
   bool _isGenerating = false;
+  bool _hasGeneratedQR = false;
 
   @override
   void initState() {
@@ -29,13 +29,6 @@ class _QRScreenState extends State<QRScreen> with SingleTickerProviderStateMixin
       vsync: this,
       duration: const Duration(milliseconds: 800),
     );
-    _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(
-        parent: _animationController,
-        curve: Curves.easeInOut,
-      ),
-    );
-    _generateNewQRCode();
   }
 
   Future<void> _generateNewQRCode() async {
@@ -47,18 +40,17 @@ class _QRScreenState extends State<QRScreen> with SingleTickerProviderStateMixin
     });
 
     try {
-      // Générer les données du QR code
       final code = DateTime.now().millisecondsSinceEpoch.toString();
       final expiry = DateTime.now().add(const Duration(seconds: 30));
       
-      // Sauvegarder dans l'API
       await _apiService.saveQRCodeAttendance(
         code: code,
         purpose: 'CHECK_IN',
         expiry: expiry,
       );
 
-      // Mettre à jour l'interface
+      if (!mounted) return;
+
       setState(() {
         _currentQRData = {
           'code': code,
@@ -66,21 +58,31 @@ class _QRScreenState extends State<QRScreen> with SingleTickerProviderStateMixin
         };
         _currentQRCode = jsonEncode(_currentQRData);
         _isGenerating = false;
+        _hasGeneratedQR = true;
       });
 
       _animationController.reset();
       _animationController.forward();
 
-      // Démarrer le timer pour l'expiration
+      // Timer pour l'expiration
       _qrTimer?.cancel();
-      _qrTimer = Timer(const Duration(seconds: 30), _generateNewQRCode);
+      _qrTimer = Timer(const Duration(seconds: 30), () {
+        if (mounted) {
+          setState(() {
+            _currentQRCode = null;
+            _currentQRData = null;
+            _hasGeneratedQR = false;
+          });
+          _showExpiredDialog();
+        }
+      });
 
-      // Timer pour la barre de progression
+      // Timer pour la progression
       _progressTimer?.cancel();
       _progressTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
         if (mounted) {
           setState(() {
-            _progress = 1 - (timer.tick / 300); // 30 secondes = 300 * 100ms
+            _progress = 1 - (timer.tick / 300);
             if (_progress <= 0) {
               timer.cancel();
             }
@@ -90,7 +92,10 @@ class _QRScreenState extends State<QRScreen> with SingleTickerProviderStateMixin
 
     } catch (e) {
       if (mounted) {
-        setState(() => _isGenerating = false);
+        setState(() {
+          _isGenerating = false;
+          _hasGeneratedQR = false;
+        });
         _showError('Erreur lors de la génération du QR code');
       }
     }
@@ -106,17 +111,48 @@ class _QRScreenState extends State<QRScreen> with SingleTickerProviderStateMixin
     );
   }
 
-  Future<void> _showQRInfoDialog() async {
-    if (_currentQRData == null) return;
+  Future<void> _showExpiredDialog() async {
+    await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('QR Code Expiré'),
+        content: const Text('Le QR code a expiré. Veuillez en générer un nouveau.'),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(context).pop();
+            },
+            child: const Text('Fermer'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.of(context).pop();
+              _generateNewQRCode();
+            },
+            child: const Text('Générer un nouveau'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showQRDialog() async {
+    if (!_hasGeneratedQR) {
+      await _generateNewQRCode();
+    }
+
+    if (!mounted) return;
 
     await showDialog(
       context: context,
+      barrierDismissible: false,
       builder: (context) => Dialog(
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(20),
         ),
-        child: Container(
-          padding: const EdgeInsets.all(24),
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -134,32 +170,55 @@ class _QRScreenState extends State<QRScreen> with SingleTickerProviderStateMixin
               ),
               const SizedBox(height: 24),
               Text(
-                'QR Code Généré',
+                'Scanner pour pointer',
                 style: Theme.of(context).textTheme.titleLarge?.copyWith(
                   fontWeight: FontWeight.bold,
                 ),
               ),
-              const SizedBox(height: 16),
-              Text(
-                'Ce QR code expirera dans quelques secondes.\nVeuillez le scanner rapidement.',
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: Colors.grey[600],
-                ),
-              ),
               const SizedBox(height: 24),
-              ElevatedButton(
-                onPressed: () => Navigator.of(context).pop(),
-                style: ElevatedButton.styleFrom(
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
+              if (_currentQRCode != null)
+                Column(
+                  children: [
+                    QrImageView(
+                      data: _currentQRCode!,
+                      version: QrVersions.auto,
+                      size: 250,
+                      backgroundColor: Colors.white,
+                    ),
+                    const SizedBox(height: 16),
+                    LinearProgressIndicator(
+                      value: _progress,
+                      backgroundColor: Colors.grey[200],
+                      valueColor: AlwaysStoppedAnimation<Color>(
+                        _progress > 0.3 ? Colors.blue : Colors.red,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Expire dans ${(_progress * 30).toInt()} secondes',
+                      style: TextStyle(
+                        color: Colors.grey[600],
+                      ),
+                    ),
+                  ],
+                )
+              else if (_isGenerating)
+                const CircularProgressIndicator(),
+              const SizedBox(height: 24),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  TextButton(
+                    onPressed: () {
+                      Navigator.of(context).pop();
+                    },
+                    child: const Text('Fermer'),
                   ),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 32,
-                    vertical: 12,
+                  ElevatedButton(
+                    onPressed: _isGenerating ? null : _generateNewQRCode,
+                    child: Text(_isGenerating ? 'Génération...' : 'Régénérer'),
                   ),
-                ),
-                child: const Text('Fermer'),
+                ],
               ),
             ],
           ),
@@ -182,90 +241,59 @@ class _QRScreenState extends State<QRScreen> with SingleTickerProviderStateMixin
       decoration: BoxDecoration(
         color: Colors.grey[100],
       ),
-      child: Column(
-        children: [
-          // Barre de progression linéaire en haut
-          LinearProgressIndicator(
-            value: _progress,
-            backgroundColor: Colors.grey[200],
-            valueColor: AlwaysStoppedAnimation<Color>(
-              _progress > 0.3 ? Colors.blue : Colors.red,
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Card(
+            elevation: 4,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20),
             ),
-          ),
-          Expanded(
-            child: Center(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    // Card contenant le QR Code
-                    Card(
-                      elevation: 4,
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.qr_code_scanner,
+                    size: 64,
+                    color: Colors.blue.shade700,
+                  ),
+                  const SizedBox(height: 24),
+                  Text(
+                    'Générer un QR Code',
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Cliquez sur le bouton ci-dessous pour\ngénérer votre QR code de pointage',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Colors.grey[600],
+                    ),
+                  ),
+                  const SizedBox(height: 32),
+                  ElevatedButton.icon(
+                    onPressed: _showQRDialog,
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 32,
+                        vertical: 16,
+                      ),
                       shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.all(24),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(
-                              'Scanner pour pointer',
-                              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            const SizedBox(height: 24),
-                            if (_currentQRCode != null)
-                              FadeTransition(
-                                opacity: _fadeAnimation,
-                                child: GestureDetector(
-                                  onTap: _showQRInfoDialog,
-                                  child: QrImageView(
-                                    data: _currentQRCode!,
-                                    version: QrVersions.auto,
-                                    size: 250,
-                                    backgroundColor: Colors.white,
-                                  ),
-                                ),
-                              )
-                            else
-                              const CircularProgressIndicator(),
-                            const SizedBox(height: 24),
-                            Text(
-                              'Le QR code expire dans ${(_qrTimer?.tick ?? 30) ~/ 10} secondes',
-                              style: TextStyle(
-                                color: Colors.grey[600],
-                                fontSize: 14,
-                              ),
-                            ),
-                          ],
-                        ),
+                        borderRadius: BorderRadius.circular(12),
                       ),
                     ),
-                    const SizedBox(height: 24),
-                    // Bouton pour régénérer
-                    ElevatedButton.icon(
-                      onPressed: _isGenerating ? null : _generateNewQRCode,
-                      style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 32,
-                          vertical: 16,
-                        ),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                      icon: const Icon(Icons.refresh),
-                      label: Text(_isGenerating ? 'Génération...' : 'Régénérer'),
-                    ),
-                  ],
-                ),
+                    icon: const Icon(Icons.qr_code),
+                    label: const Text('Générer QR Code'),
+                  ),
+                ],
               ),
             ),
           ),
-        ],
+        ),
       ),
     );
   }

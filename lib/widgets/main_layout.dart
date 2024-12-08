@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import '../screens/home_screen.dart';
 import '../screens/qr_screen.dart';
 import '../screens/leave_screen.dart';
+import '../screens/login_screen.dart';
 import '../api.dart';
 
 class MainLayout extends StatefulWidget {
@@ -26,6 +27,82 @@ class _MainLayoutState extends State<MainLayout> {
     setState(() {
       _currentIndex = index;
     });
+  }
+
+  Future<void> _handleLogout() async {
+    // Afficher une boîte de dialogue de confirmation
+    final bool? confirm = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Déconnexion'),
+          content: const Text('Êtes-vous sûr de vouloir vous déconnecter ?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Annuler'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              style: TextButton.styleFrom(
+                foregroundColor: Colors.red,
+              ),
+              child: const Text('Déconnexion'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirm != true) return;
+
+    // Afficher un indicateur de chargement
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return const Center(
+          child: CircularProgressIndicator(),
+        );
+      },
+    );
+
+    try {
+      final success = await _apiService.logout();
+      
+      if (!mounted) return;
+      
+      // Fermer l'indicateur de chargement
+      Navigator.of(context).pop();
+
+      if (success) {
+        // Rediriger vers la page de connexion et effacer la pile de navigation
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => const LoginScreen()),
+          (route) => false,
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Erreur lors de la déconnexion'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      
+      // Fermer l'indicateur de chargement
+      Navigator.of(context).pop();
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Erreur: ${e.toString()}'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 
   PreferredSizeWidget _buildAppBar() {
@@ -90,16 +167,11 @@ class _MainLayoutState extends State<MainLayout> {
             ),
           ],
         ),
-        // Bouton de déconnexion
+        // Bouton de déconnexion mis à jour
         IconButton(
           icon: const Icon(Icons.logout),
           color: Colors.black87,
-          onPressed: () async {
-            await _apiService.logout();
-            if (mounted) {
-              Navigator.of(context).pushReplacementNamed('/login');
-            }
-          },
+          onPressed: _handleLogout,
         ),
         const SizedBox(width: 8),
       ],
